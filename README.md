@@ -120,6 +120,35 @@ device.on('imu6_fast', (data) => { ... });
 | `error`        | Non-fatal error (parse failure, timed-out command, MTU drop). |
 | sensor events  | See subscription table above. |
 
+### Error handling
+
+The driver is designed to never crash the host app. Specifically:
+
+- Every device and scanner has an internal guard that catches throws from `'error'` listeners and the throws Node's `EventEmitter` raises when an `'error'` event is emitted with no listener attached.
+- Every async path inside the driver (reconnect loop, notification handler, command writes, parser invocations) wraps its work and surfaces failures as an `'error'` event rather than as an unhandled rejection.
+- `connect()`, `subscribeXxx()`, `get()` and `disconnect()` all reject their returned promises on failure so the caller can `try/catch` or `.catch(...)` them.
+
+You should still attach `device.on('error', fn)` so you can see what went wrong; the guard only prevents crashes, it doesn't suppress information.
+
+```js
+device.on('error', (err) => {
+  // err is a normal Error. Examples you may see:
+  //   "Subscribe /Meas/Acc/52 failed (status 404)"   // bad rate / firmware
+  //   "Command ref 5 timed out"                       // sensor stopped responding
+  //   "Disconnected"                                  // mid-flight when link dropped
+  //   "Parse failure for /Meas/HR: ..."               // malformed payload
+  //   "Dropped DATA_CONT for /Meas/ECG/500 (MTU too small)"
+  myLogger.warn(err);
+});
+
+// One stream failing doesn't poison the rest:
+const results = await Promise.allSettled([
+  device.subscribeAcc(52),
+  device.subscribeEcg(125),
+]);
+for (const r of results) if (r.status === 'rejected') myLogger.warn(r.reason);
+```
+
 ### Reconnect strategy
 
 On unexpected `disconnect`, the device retries with exponential backoff capped at `maxReconnectDelayMs` (default 30s). On success it re-subscribes every previously active path with fresh reference numbers. Calling `disconnect()` cancels the loop. Override:
