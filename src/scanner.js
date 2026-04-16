@@ -18,6 +18,24 @@ class MovesenseScanner extends EventEmitter {
     this._scanning = false;
     this._discovered = new Map(); // peripheral.id -> MovesenseDevice
     this._discoverHandler = null;
+    // Prevent missing 'error' listener from crashing the host.
+    this.on('error', () => {});
+  }
+
+  _emit(event, ...args) {
+    try {
+      EventEmitter.prototype.emit.call(this, event, ...args);
+    } catch (err) {
+      if (event === 'error') {
+        try { console.error('[movesense-driver] scanner error listener threw:', err); } catch (_) {}
+        return;
+      }
+      try {
+        EventEmitter.prototype.emit.call(this, 'error', err);
+      } catch (_) {
+        try { console.error('[movesense-driver] scanner listener threw:', err); } catch (_) {}
+      }
+    }
   }
 
   async start() {
@@ -78,12 +96,16 @@ class MovesenseScanner extends EventEmitter {
   }
 
   _onDiscover(peripheral) {
-    const name = peripheral.advertisement && peripheral.advertisement.localName;
-    if (!name || !name.startsWith('Movesense')) return;
-    if (this._discovered.has(peripheral.id)) return;
-    const device = new MovesenseDevice(peripheral, this._opts);
-    this._discovered.set(peripheral.id, device);
-    this.emit('discover', device);
+    try {
+      const name = peripheral && peripheral.advertisement && peripheral.advertisement.localName;
+      if (!name || !name.startsWith('Movesense')) return;
+      if (this._discovered.has(peripheral.id)) return;
+      const device = new MovesenseDevice(peripheral, this._opts);
+      this._discovered.set(peripheral.id, device);
+      this._emit('discover', device);
+    } catch (err) {
+      this._emit('error', err);
+    }
   }
 }
 

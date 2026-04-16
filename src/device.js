@@ -133,7 +133,7 @@ class MovesenseDevice extends EventEmitter {
 
     this._connected = true;
     this._reconnectAttempts = 0;
-    this.emit('connect');
+    this._emit('connect');
   }
 
   _handleDisconnect() {
@@ -142,11 +142,11 @@ class MovesenseDevice extends EventEmitter {
     this._writeChar = null;
     this._notifyChar = null;
     this._rejectAllPending(new Error('Disconnected'));
-    this.emit('disconnect');
+    this._emit('disconnect');
 
     if (this._userDisconnected || !this._opts.autoReconnect || this._reconnecting) return;
     this._reconnecting = true;
-    this._reconnectLoop().catch(err => this.emit('error', err)).finally(() => {
+    this._reconnectLoop().catch(err => this._emit('error', err)).finally(() => {
       this._reconnecting = false;
     });
   }
@@ -159,7 +159,7 @@ class MovesenseDevice extends EventEmitter {
         this._opts.maxReconnectDelayMs
       );
       this._reconnectAttempts++;
-      this.emit('reconnecting', { attempt: this._reconnectAttempts, delayMs: delay });
+      this._emit('reconnecting', { attempt: this._reconnectAttempts, delayMs: delay });
       await sleep(delay);
       if (this._userDisconnected) return;
 
@@ -173,13 +173,13 @@ class MovesenseDevice extends EventEmitter {
           try {
             await this._subscribePath(sub.path, sub.parser, sub.event);
           } catch (e) {
-            this.emit('error', new Error(`Resubscribe failed for ${sub.path}: ${e.message}`));
+            this._emit('error', new Error(`Resubscribe failed for ${sub.path}: ${e.message}`));
           }
         }
-        this.emit('reconnect');
+        this._emit('reconnect');
         return;
       } catch (e) {
-        this.emit('error', e);
+        this._emit('error', e);
         // continue loop
       }
     }
@@ -262,7 +262,7 @@ class MovesenseDevice extends EventEmitter {
 
   _handleNotification(data) {
     if (!data || data.length < 2) return;
-    if (this._opts.debug) this.emit('debug', { dir: 'in', hex: data.toString('hex'), len: data.length });
+    if (this._opts.debug) this._emit('debug', { dir: 'in', hex: data.toString('hex'), len: data.length });
 
     const code = data.readUInt8(0);
     const ref  = data.readUInt8(1);
@@ -296,18 +296,18 @@ class MovesenseDevice extends EventEmitter {
       // this only matters for high-rate ECG at default MTU; users should
       // request a higher MTU at the OS level if they hit this.
       if (code === protocol.RESP.DATA_CONT) {
-        this.emit('error', new Error(`Dropped DATA_CONT for ${sub.path} (MTU too small)`));
+        this._emit('error', new Error(`Dropped DATA_CONT for ${sub.path} (MTU too small)`));
         return;
       }
       try {
         const parsed = sub.parser(data);
-        this.emit(sub.event, parsed);
+        this._emit(sub.event, parsed);
         // Convenience second event for HR consumers who only care about RR.
         if (sub.event === 'hr' && parsed && parsed.rrIntervals && parsed.rrIntervals.length) {
-          this.emit('rr', parsed.rrIntervals);
+          this._emit('rr', parsed.rrIntervals);
         }
       } catch (e) {
-        this.emit('error', new Error(`Parse failure for ${sub.path}: ${e.message}`));
+        this._emit('error', new Error(`Parse failure for ${sub.path}: ${e.message}`));
       }
     }
   }
@@ -346,18 +346,18 @@ class MovesenseDevice extends EventEmitter {
   }
 
   // Internal emit wrapper. A throwing user listener (or a missing 'error'
-  // listener) must never propagate up into our own async flows.
+  // listener) must never propagate up into our own async flows. Uses the raw
+  // EventEmitter.prototype.emit to avoid infinite recursion.
   _emit(event, ...args) {
     try {
-      this.emit(event, ...args);
+      EventEmitter.prototype.emit.call(this, event, ...args);
     } catch (err) {
       if (event === 'error') {
-        // Last resort — both the emit AND the swallow path failed.
         try { console.error('[movesense-driver] error listener threw:', err); } catch (_) {}
         return;
       }
       try {
-        this.emit('error', wrap(err, `listener for "${event}" threw`));
+        EventEmitter.prototype.emit.call(this, 'error', wrap(err, `listener for "${event}" threw`));
       } catch (_) {
         try { console.error('[movesense-driver] listener threw:', err); } catch (_) {}
       }
