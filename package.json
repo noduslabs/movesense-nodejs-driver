@@ -1,5 +1,5 @@
 {
-	"name": "movesense-nodejs-driver",
+	"name": "movesense-driver",
 	"version": "0.1.0",
 	"description": "Node.js driver for Movesense BLE sensors (accelerometer, gyro, magnetometer, IMU, ECG, HR/RR, temperature) via the GATT SensorData Protocol.",
 	"main": "index.js",

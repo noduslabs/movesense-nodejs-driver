@@ -54,6 +54,93 @@ To target a specific sensor by serial number (the digits after “Movesense ” 
 const device = await scanner.findOne({ serial: '210330000123' });
 ```
 
+## What data the sensor provides
+
+The Movesense exposes the following streams via the GATT SensorData Protocol. Subscribe to one with the matching helper, listen on the matching event, get sample batches at the chosen rate.
+
+| Data | Subscribe call | Event | Sample shape | Units | Available rates (Hz) |
+|---|---|---|---|---|---|
+| **Accelerometer** | `subscribeAcc(rate)` | `acc` | `{x, y, z}` (float32) | mg | 13 · 26 · 52 · 104 · 208 · 416 · 833 · 1666 |
+| **Gyroscope** | `subscribeGyro(rate)` | `gyro` | `{x, y, z}` | °/s | same as Acc |
+| **Magnetometer** | `subscribeMagn(rate)` | `magn` | `{x, y, z}` | µT | same as Acc |
+| **IMU6** (acc + gyro, time-aligned) | `subscribeImu6(rate)` | `imu6` | `{acc:{x,y,z}, gyro:{x,y,z}}` | mg + °/s | same as Acc |
+| **IMU9** (acc + gyro + magn) | `subscribeImu9(rate)` | `imu9` | `{acc, gyro, magn}` | mg + °/s + µT | same as Acc |
+| **ECG** | `subscribeEcg(rate)` | `ecg` | `int32` raw counts | × 0.381 → µV | 125 · 128 · 200 · 250 · 256 · 500 · 512 |
+| **Heart rate** | `subscribeHr()` | `hr` | `{average, rrIntervals}` | bpm + ms | event-driven (per beat) |
+| **R-R intervals** | `subscribeHr()` | `rr` | `number[]` | ms | re-emitted from `hr` |
+| **Temperature** | `subscribeTemp()` | `temp` | `{kelvin, celsius}` | K / °C | event-driven (~1 Hz) |
+
+Every `Meas` packet (HR is the exception) includes a `timestamp` (uint32 ms since sensor boot) and arrives as a *batch* of N samples per BLE notification — N depends on the rate and the negotiated MTU. Higher rates (≥ 416 Hz motion, ≥ 250 Hz ECG) need a negotiated MTU ≥ 185.
+
+### Worked examples
+
+```js
+// Motion — accelerometer at 52 Hz
+await device.subscribeAcc(52);
+device.on('acc', ({ timestamp, samples }) => {
+  for (const s of samples) {
+    console.log(timestamp, s.x, s.y, s.z); // mg
+  }
+});
+
+// Heart rate + R-R intervals (HRV)
+await device.subscribeHr();
+device.on('hr', ({ average, rrIntervals }) => {
+  console.log(`${average.toFixed(0)} bpm`, rrIntervals, 'ms');
+});
+device.on('rr', (rr) => myHrvBuffer.push(...rr)); // convenience event
+
+// ECG at 250 Hz, converted to microvolts
+await device.subscribeEcg(250);
+device.on('ecg', ({ timestamp, samples }) => {
+  const microvolts = samples.map(s => s * 0.381);
+  myEcgBuffer.push({ t: timestamp, uV: microvolts });
+});
+
+// Combined IMU at 104 Hz
+await device.subscribeImu9(104);
+device.on('imu9', ({ samples }) => {
+  for (const s of samples) {
+    // s.acc.{x,y,z}  s.gyro.{x,y,z}  s.magn.{x,y,z}
+  }
+});
+
+// Temperature
+await device.subscribeTemp();
+device.on('temp', ({ celsius }) => console.log(`${celsius.toFixed(1)} °C`));
+```
+
+### One-shot reads (GET endpoints)
+
+Beyond the `/Meas/*` streams, the sensor exposes static and on-demand info you can fetch with `device.get(path)`. The driver returns the raw SBEM payload bytes; you decode the fields you need.
+
+| Path | Returns |
+|---|---|
+| `/Info` | manufacturer, product name, **serial**, sw/hw versions, API level, hw config |
+| `/System/Energy/Level` | battery percentage (0–100) |
+| `/System/Mode` | current power / operation mode |
+| `/Time` | UTC clock (µs) |
+| `/Component/Leds` | LED control (also writeable) |
+| `/Mem/Logbook/Entries` | list of on-device recorded sessions |
+| `/Misc/Gear/Id` | paired-gear ID (HR-strap variants) |
+
+```js
+const { status, payload } = await device.get('/Info');
+// status === 200, payload is a Buffer of SBEM-encoded bytes
+```
+
+The full set of resources, parameters and SBEM schemas is documented in the [Movesense API YAML specs](https://bitbucket.org/movesense/movesense-device-lib/src/master/MovesenseCoreLib/resources/movesense-api/).
+
+### Custom paths
+
+For any resource the driver doesn't wrap, use the generic `subscribe(path, parser, eventName)`:
+
+```js
+const { parsers } = require('movesense-driver');
+await device.subscribe('/Meas/IMU6/208', parsers.parseImu6, 'imu6_fast');
+device.on('imu6_fast', (data) => { /* ... */ });
+```
+
 ## API
 
 ### `class MovesenseScanner`
@@ -84,28 +171,9 @@ Properties: `id`, `localName`, `serial`.
 
 #### Subscriptions
 
-All subscribe methods return a `Promise<Subscription>` and start emitting events after the sensor ACKs the SUBSCRIBE.
+See [What data the sensor provides](#what-data-the-sensor-provides) for the full list of streams, payload shapes, units, and rates. Method defaults: `subscribeAcc/Gyro/Magn/Imu6/Imu9` default to 52 Hz, `subscribeEcg` to 125 Hz; `subscribeHr` and `subscribeTemp` take no rate.
 
-| Method | Default rate | Event | Payload |
-|---|---|---|---|
-| `subscribeAcc(rate)` | 52 Hz | `acc`  | `{ timestamp, samples: [{x,y,z}] }` (mg) |
-| `subscribeGyro(rate)` | 52 Hz | `gyro` | `{ timestamp, samples: [{x,y,z}] }` (deg/s) |
-| `subscribeMagn(rate)` | 52 Hz | `magn` | `{ timestamp, samples: [{x,y,z}] }` (µT) |
-| `subscribeImu6(rate)` | 52 Hz | `imu6` | `{ timestamp, samples: [{acc,gyro}] }` |
-| `subscribeImu9(rate)` | 52 Hz | `imu9` | `{ timestamp, samples: [{acc,gyro,magn}] }` |
-| `subscribeEcg(rate)` | 125 Hz | `ecg`  | `{ timestamp, samples: number[] }` (raw int32) |
-| `subscribeHr()` | — | `hr` | `{ average, rrIntervals }` — also re-emitted as `rr` |
-| `subscribeTemp()` | — | `temp` | `{ timestamp, kelvin, celsius }` |
-
-Valid motion-sensor rates: `13, 26, 52, 104, 208, 416, 833, 1666` Hz. Valid ECG rates: `125, 128, 200, 250, 256, 500, 512` Hz. Higher rates need a negotiated MTU ≥ 185.
-
-For paths this driver doesn't wrap (e.g. `/Meas/IMU6m`, app-specific resources):
-
-```js
-const { parsers } = require('movesense-driver');
-await device.subscribe('/Meas/IMU6/104', parsers.parseImu6, 'imu6_fast');
-device.on('imu6_fast', (data) => { ... });
-```
+All subscribe methods return a `Promise<Subscription>` and start emitting events after the sensor ACKs the SUBSCRIBE (or sends the first DATA packet, whichever comes first).
 
 `unsubscribe(path)` stops a stream. `get(path)` issues a one-shot GET and resolves with `{ status, payload }` (raw SBEM bytes — caller decodes).
 
