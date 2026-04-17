@@ -108,6 +108,12 @@ export class MovesenseDevice extends EventEmitter {
 
   get(path: string): Promise<GetResponse>;
 
+  /** Read the current battery level (0-100) from the standard BLE Battery Service. */
+  getBatteryLevel(): Promise<number>;
+  /** Subscribe to battery-level notifications. Emits `battery` events. */
+  subscribeBatteryLevel(): Promise<void>;
+  unsubscribeBatteryLevel(): Promise<void>;
+
   on(event: 'connect', listener: () => void): this;
   on(event: 'disconnect', listener: () => void): this;
   on(event: 'reconnecting', listener: (info: ReconnectingEvent) => void): this;
@@ -122,6 +128,7 @@ export class MovesenseDevice extends EventEmitter {
   on(event: 'hr',   listener: (data: HrSample) => void): this;
   on(event: 'rr',   listener: (rr: number[]) => void): this;
   on(event: 'temp', listener: (data: TempSample) => void): this;
+  on(event: 'battery', listener: (data: { percent: number }) => void): this;
   on(event: string, listener: (...args: unknown[]) => void): this;
 }
 

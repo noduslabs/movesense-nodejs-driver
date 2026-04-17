@@ -10,6 +10,11 @@ const SERVICE_UUID      = '3480225271854d5db431630e7050e8f0';
 const WRITE_CHAR_UUID   = '3480000171854d5db431630e7050e8f0';
 const NOTIFY_CHAR_UUID  = '3480000271854d5db431630e7050e8f0';
 
+// Standard BLE Battery Service (0x180F) — exposed by Movesense alongside the
+// Whiteboard service. Works regardless of firmware variant.
+const BATTERY_SERVICE_UUID = '180f';
+const BATTERY_LEVEL_CHAR_UUID = '2a19';
+
 // Command codes (client -> sensor)
 const CMD = Object.freeze({
   HELLO:       0,
@@ -54,6 +59,8 @@ module.exports = {
   SERVICE_UUID,
   WRITE_CHAR_UUID,
   NOTIFY_CHAR_UUID,
+  BATTERY_SERVICE_UUID,
+  BATTERY_LEVEL_CHAR_UUID,
   CMD,
   RESP,
   buildSubscribe,

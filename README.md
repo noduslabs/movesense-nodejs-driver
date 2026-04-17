@@ -110,14 +110,28 @@ await device.subscribeTemp();
 device.on('temp', ({ celsius }) => console.log(`${celsius.toFixed(1)} °C`));
 ```
 
+### Battery level
+
+Movesense exposes battery via the **standard BLE Battery Service** (UUID `0x180F`), which works on every firmware variant and returns the value instantly:
+
+```js
+const percent = await device.getBatteryLevel();   // 0–100, immediate
+console.log(`battery: ${percent}%`);
+
+// Optional: live updates when the level changes
+await device.subscribeBatteryLevel();
+device.on('battery', ({ percent }) => console.log(`battery: ${percent}%`));
+```
+
+The Whiteboard endpoints `/System/Energy/Level` and `/System/Energy` also exist but are unreliable across firmware builds (some `gatt-sensordata-app` variants strip them and return `400`). Prefer `getBatteryLevel()`.
+
 ### One-shot reads (GET endpoints)
 
-Beyond the `/Meas/*` streams, the sensor exposes static and on-demand info you can fetch with `device.get(path)`. The driver returns the raw SBEM payload bytes; you decode the fields you need.
+Beyond the `/Meas/*` streams and battery, the sensor exposes static and on-demand info you can fetch with `device.get(path)`. The driver returns the raw SBEM payload bytes; you decode the fields you need.
 
 | Path | Returns |
 |---|---|
 | `/Info` | manufacturer, product name, **serial**, sw/hw versions, API level, hw config |
-| `/System/Energy/Level` | battery percentage (0–100) |
 | `/System/Mode` | current power / operation mode |
 | `/Time` | UTC clock (µs) |
 | `/Component/Leds` | LED control (also writeable) |
@@ -233,7 +247,8 @@ const scanner = new MovesenseScanner({
 ## Examples
 
 ```bash
-node examples/basic.js                                    # Acc + HR
+node examples/basic.js                                      # Acc + HR
+node examples/battery.js                                    # battery level (one-shot + stream)
 MOVESENSE_SERIAL=210330000123 node examples/all-sensors.js  # everything
 ```
 

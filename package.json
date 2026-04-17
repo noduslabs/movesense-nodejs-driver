@@ -14,7 +14,8 @@
 	"scripts": {
 		"test": "node test/parsers.test.js",
 		"example:basic": "node examples/basic.js",
-		"example:all": "node examples/all-sensors.js"
+		"example:all": "node examples/all-sensors.js",
+		"example:battery": "node examples/battery.js"
 	},
 	"keywords": [
 		"movesense",

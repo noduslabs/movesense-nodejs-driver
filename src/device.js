@@ -84,6 +84,48 @@ class MovesenseDevice extends EventEmitter {
     return this._subscribePath(path, parser, event);
   }
 
+  // ---- Battery (standard BLE Battery Service, not Whiteboard) ----
+  // Works on every Movesense firmware variant. Returns a uint8 percentage.
+  async getBatteryLevel() {
+    const ch = await this._ensureBatteryChar();
+    const data = await ch.readAsync();
+    if (!data || data.length < 1) throw new Error('Battery characteristic returned no data');
+    return data.readUInt8(0);
+  }
+
+  // Subscribe to battery-level change notifications. Emits 'battery'
+  // events with `{ percent }`.
+  async subscribeBatteryLevel() {
+    const ch = await this._ensureBatteryChar();
+    if (this._batteryNotifyHandler) return;
+    this._batteryNotifyHandler = (data) => {
+      if (!data || data.length < 1) return;
+      this._emit('battery', { percent: data.readUInt8(0) });
+    };
+    ch.on('data', this._batteryNotifyHandler);
+    await ch.subscribeAsync();
+  }
+
+  async unsubscribeBatteryLevel() {
+    if (!this._batteryChar || !this._batteryNotifyHandler) return;
+    try { await this._batteryChar.unsubscribeAsync(); } catch (_) {}
+    this._batteryChar.removeListener('data', this._batteryNotifyHandler);
+    this._batteryNotifyHandler = null;
+  }
+
+  async _ensureBatteryChar() {
+    if (!this._connected) throw new Error('Not connected');
+    if (this._batteryChar) return this._batteryChar;
+    const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(
+      [protocol.BATTERY_SERVICE_UUID],
+      [protocol.BATTERY_LEVEL_CHAR_UUID]
+    );
+    const ch = characteristics.find(c => c.uuid === protocol.BATTERY_LEVEL_CHAR_UUID);
+    if (!ch) throw new Error('Standard Battery Service not exposed by this sensor');
+    this._batteryChar = ch;
+    return ch;
+  }
+
   async unsubscribe(path) {
     const sub = this._activeSubs.get(path);
     if (!sub) return false;
@@ -141,6 +183,8 @@ class MovesenseDevice extends EventEmitter {
     this._connected = false;
     this._writeChar = null;
     this._notifyChar = null;
+    this._batteryChar = null;
+    this._batteryNotifyHandler = null;
     this._rejectAllPending(new Error('Disconnected'));
     this._emit('disconnect');
 
