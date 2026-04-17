@@ -105,17 +105,22 @@ class MovesenseDevice extends EventEmitter {
     const ch = await this._ensureBatteryChar();
     const data = await ch.readAsync();
     if (!data || data.length < 1) throw new Error('Battery characteristic returned no data');
-    return data.readUInt8(0);
+    return validateBatteryPercent(data.readUInt8(0));
   }
 
   // Subscribe to battery-level change notifications. Emits 'battery'
-  // events with `{ percent }`.
+  // events with `{ percent }`. Out-of-spec values surface as 'error' events.
   async subscribeBatteryLevel() {
     const ch = await this._ensureBatteryChar();
     if (this._batteryNotifyHandler) return;
     this._batteryNotifyHandler = (data) => {
       if (!data || data.length < 1) return;
-      this._emit('battery', { percent: data.readUInt8(0) });
+      try {
+        const percent = validateBatteryPercent(data.readUInt8(0));
+        this._emit('battery', { percent });
+      } catch (e) {
+        this._emit('error', e);
+      }
     };
     ch.on('data', this._batteryNotifyHandler);
     await ch.subscribeAsync();
@@ -440,5 +445,15 @@ function extractSerial(localName) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function noop() {}
+
+// BLE Battery Service spec: uint8, 0-100. Anything else is firmware
+// misbehaviour (e.g. 0xFF as an "unknown" sentinel) — surface as an error
+// rather than silently returning a bogus number.
+function validateBatteryPercent(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 100) {
+    throw new Error(`Battery characteristic returned out-of-spec value ${n} (expected 0-100)`);
+  }
+  return n;
+}
 
 module.exports = { MovesenseDevice };
