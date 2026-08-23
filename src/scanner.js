@@ -45,8 +45,15 @@ class MovesenseScanner extends EventEmitter {
 
     this._discoverHandler = (peripheral) => this._onDiscover(peripheral);
     n.on('discover', this._discoverHandler);
-    // allowDuplicates=false: only emit each Movesense once per scan session.
-    await n.startScanningAsync([], false);
+    // allowDuplicates=true: Movesense units advertise their name in the SCAN
+    // RESPONSE, not in the connectable ADV packet. Backends differ in whether
+    // they merge the two before noble sees them — macOS CoreBluetooth does,
+    // Windows WinRT emits them as separate discoveries. So suppressing
+    // duplicates means WinRT only ever delivers the first, unnamed packet, the
+    // name filter in _onDiscover drops it, and nothing is ever discovered.
+    // We still de-dupe per peripheral below, so this scanner emits 'discover'
+    // exactly once per sensor, as before.
+    await n.startScanningAsync([], this._opts.allowDuplicates !== false);
     this._scanning = true;
   }
 
@@ -97,9 +104,13 @@ class MovesenseScanner extends EventEmitter {
 
   _onDiscover(peripheral) {
     try {
-      const name = peripheral && peripheral.advertisement && peripheral.advertisement.localName;
+      // Cheapest check first — this now runs for every advertising packet
+      // from every device in range, not once per device.
+      if (!peripheral || this._discovered.has(peripheral.id)) return;
+      // The name may only arrive on a later packet than the one that first
+      // exposed this peripheral, so keep ignoring it until one identifies it.
+      const name = peripheral.advertisement && peripheral.advertisement.localName;
       if (!name || !name.startsWith('Movesense')) return;
-      if (this._discovered.has(peripheral.id)) return;
       const device = new MovesenseDevice(peripheral, this._opts);
       this._discovered.set(peripheral.id, device);
       this._emit('discover', device);

@@ -65,6 +65,17 @@ export interface DeviceOptions {
   commandTimeoutMs?: number;
 }
 
+export interface ScannerOptions extends DeviceOptions {
+  /**
+   * Ask the BLE backend for every advertising packet rather than one per
+   * device. Default true — Movesense sends its name in the scan response, and
+   * some backends (Windows/WinRT) deliver that as a separate packet that is
+   * dropped when duplicates are suppressed. The scanner still emits 'discover'
+   * once per device either way.
+   */
+  allowDuplicates?: boolean;
+}
+
 export interface ReconnectingEvent {
   attempt: number;
   delayMs: number;
@@ -139,7 +150,7 @@ export interface FindOneOptions {
 }
 
 export class MovesenseScanner extends EventEmitter {
-  constructor(opts?: DeviceOptions);
+  constructor(opts?: ScannerOptions);
   start(): Promise<void>;
   stop(): Promise<void>;
   findOne(opts?: FindOneOptions): Promise<MovesenseDevice>;

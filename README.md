@@ -171,6 +171,13 @@ const device = await scanner.findOne({ serial?, timeoutMs? });
 
 `deviceOptions` are forwarded to every discovered `MovesenseDevice`.
 
+Scanning runs with duplicate advertising packets allowed, because a Movesense puts its
+local name in the *scan response* rather than in the connectable ADV packet. macOS
+merges the two before your code sees them; Windows/WinRT delivers them separately, so
+suppressing duplicates there means the named packet never arrives and no sensor is ever
+found. `discover` still fires exactly once per device. Pass `{ allowDuplicates: false }`
+to opt out if you have a backend that merges them and you want the lower packet rate.
+
 ### `class MovesenseDevice` (extends `EventEmitter`)
 
 #### Connection

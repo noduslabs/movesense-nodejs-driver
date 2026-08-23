@@ -24,8 +24,11 @@ class MovesenseDevice extends EventEmitter {
     super();
     this.peripheral = peripheral;
     this.id = peripheral.id;
-    this.localName = (peripheral.advertisement && peripheral.advertisement.localName) || null;
-    this.serial = extractSerial(this.localName);
+    // Don't snapshot the name: when scanning with allowDuplicates the packet
+    // that constructs this device may not be the one carrying the local name
+    // (see scanner.js). `localName` reads live from the advertisement noble
+    // keeps merging, and is sticky once a name has been seen.
+    this._localName = (peripheral.advertisement && peripheral.advertisement.localName) || null;
 
     this._opts = Object.assign({}, DEFAULT_OPTS, opts);
     // Make stray `emit('error')` calls safe even if no listener is attached —
@@ -43,6 +46,18 @@ class MovesenseDevice extends EventEmitter {
     this._activeSubs = new Map();      // path -> { ref, parser, event, path }
     this._pendingResponses = new Map(); // ref -> { resolve, reject, timer }
     this._nextRef = 1;
+  }
+
+  /** Advertised BLE local name, e.g. "Movesense 210330000123". */
+  get localName() {
+    const live = this.peripheral && this.peripheral.advertisement && this.peripheral.advertisement.localName;
+    if (live) this._localName = live;
+    return this._localName;
+  }
+
+  /** Serial number parsed out of the local name, e.g. "210330000123". */
+  get serial() {
+    return extractSerial(this.localName);
   }
 
   // ---------- public connection API ----------
