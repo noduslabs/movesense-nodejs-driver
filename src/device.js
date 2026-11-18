@@ -9,6 +9,11 @@ const DEFAULT_OPTS = {
   initialReconnectDelayMs: 1000,
   maxReconnectDelayMs: 30000,
   commandTimeoutMs: 8000,
+  // Hard ceiling on connect (BLE link + service discovery). Movesense
+  // sensors normally complete this in 1-3 s; if we hit the timeout the
+  // sensor is almost always running a firmware variant that doesn't
+  // expose the GATT SensorData Protocol (e.g. early MDS-only firmware).
+  connectTimeoutMs: 15000,
   // Some Movesense firmwares only respond reliably to write-with-response on
   // macOS/CoreBluetooth. Default to that and let the user opt back into
   // write-without-response (lower latency) if their stack supports it.
@@ -64,7 +69,11 @@ class MovesenseDevice extends EventEmitter {
 
   async connect() {
     this._userDisconnected = false;
-    await this._connectInternal();
+    await withTimeout(
+      this._connectInternal(),
+      this._opts.connectTimeoutMs,
+      `connect timed out after ${this._opts.connectTimeoutMs}ms — sensor may be running pre-GSP firmware`
+    );
   }
 
   async disconnect() {
@@ -135,15 +144,10 @@ class MovesenseDevice extends EventEmitter {
 
   async _ensureBatteryChar() {
     if (!this._connected) throw new Error('Not connected');
-    if (this._batteryChar) return this._batteryChar;
-    const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(
-      [protocol.BATTERY_SERVICE_UUID],
-      [protocol.BATTERY_LEVEL_CHAR_UUID]
-    );
-    const ch = characteristics.find(c => c.uuid === protocol.BATTERY_LEVEL_CHAR_UUID);
-    if (!ch) throw new Error('Standard Battery Service not exposed by this sensor');
-    this._batteryChar = ch;
-    return ch;
+    if (!this._batteryChar) {
+      throw new Error('Standard Battery Service not exposed by this sensor');
+    }
+    return this._batteryChar;
   }
 
   async unsubscribe(path) {
@@ -161,14 +165,59 @@ class MovesenseDevice extends EventEmitter {
   async _connectInternal() {
     await this.peripheral.connectAsync();
 
-    const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(
-      [protocol.SERVICE_UUID],
-      [protocol.WRITE_CHAR_UUID, protocol.NOTIFY_CHAR_UUID]
-    );
-    this._writeChar  = characteristics.find(c => c.uuid === protocol.WRITE_CHAR_UUID);
-    this._notifyChar = characteristics.find(c => c.uuid === protocol.NOTIFY_CHAR_UUID);
+    // Two-stage discovery so a missing optional service (Battery) or the
+    // entire GSP service doesn't atomic-reject the whole call. We do this
+    // ONCE per connect — repeat discovery on macOS/CoreBluetooth and BlueZ
+    // invalidates the active notify subscription.
+    //
+    // Stage 1: enumerate every service the sensor exposes. discoverServices()
+    // with no UUID filter returns whatever's there; it never rejects with
+    // "not found".
+    const services = await this.peripheral.discoverServicesAsync();
+    const serviceUuids = (services || []).map(s => s.uuid);
+    const gspService     = (services || []).find(s => s.uuid === protocol.SERVICE_UUID);
+    const batteryService = (services || []).find(s => s.uuid === protocol.BATTERY_SERVICE_UUID);
+
+    if (!gspService) {
+      try { await this.peripheral.disconnectAsync(); } catch (_) {}
+      const list = serviceUuids.length ? serviceUuids.join(', ') : '<none discoverable>';
+      const looksLikeMds = serviceUuids.some(u => u === '61353090a11211e3a8960002a5d5c51b');
+      throw new Error(
+        `Movesense GATT SensorData Protocol service not found on this sensor.\n` +
+        `  Services exposed: ${list}\n` +
+        (looksLikeMds
+          ? `  Detected the older MDS protocol (Suunto service 61353090-…). `
+          : `  `) +
+        `This driver requires the GSP service ` +
+        `(34802252-7185-4d5d-b431-630e7050e8f0) which the firmware does not expose. ` +
+        `Update the sensor firmware to default-firmware >= 2.3 (or flash ` +
+        `gatt-sensordata-app) and reconnect.`
+      );
+    }
+
+    // Stage 2: discover characteristics for each found service, one service
+    // at a time so a missing battery characteristic doesn't kill GSP.
+    const gspChars = await gspService.discoverCharacteristicsAsync([
+      protocol.WRITE_CHAR_UUID,
+      protocol.NOTIFY_CHAR_UUID,
+    ]);
+    this._writeChar  = (gspChars || []).find(c => c.uuid === protocol.WRITE_CHAR_UUID);
+    this._notifyChar = (gspChars || []).find(c => c.uuid === protocol.NOTIFY_CHAR_UUID);
     if (!this._writeChar || !this._notifyChar) {
-      throw new Error('Movesense GSP characteristics not found — wrong firmware?');
+      try { await this.peripheral.disconnectAsync(); } catch (_) {}
+      throw new Error('GSP service present but required write/notify characteristics are missing');
+    }
+
+    this._batteryChar = null;
+    if (batteryService) {
+      try {
+        const batChars = await batteryService.discoverCharacteristicsAsync([
+          protocol.BATTERY_LEVEL_CHAR_UUID,
+        ]);
+        this._batteryChar = (batChars || []).find(c => c.uuid === protocol.BATTERY_LEVEL_CHAR_UUID) || null;
+      } catch (_) {
+        // Battery is optional; ignore discovery errors and continue.
+      }
     }
 
     // Pick a write mode the characteristic actually supports. Honour the user
@@ -445,6 +494,27 @@ function extractSerial(localName) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function noop() {}
+
+async function withTimeout(promise, ms, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      }),
+    ]);
+  } catch (e) {
+    // noble can reject with strings or undefined on some failure paths.
+    // Normalise so callers can always read .message.
+    if (e instanceof Error) throw e;
+    if (e == null) throw new Error(`${label} (no error provided)`);
+    throw new Error(typeof e === 'string' ? e : (e.toString && e.toString()) || String(e));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 
 // BLE Battery Service spec: uint8, 0-100. Anything else is firmware
 // misbehaviour (e.g. 0xFF as an "unknown" sentinel) — surface as an error

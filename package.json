@@ -15,7 +15,8 @@
 		"test": "node test/parsers.test.js && node test/scanner.test.js",
 		"example:basic": "node examples/basic.js",
 		"example:all": "node examples/all-sensors.js",
-		"example:battery": "node examples/battery.js"
+		"example:battery": "node examples/battery.js",
+		"example:probe": "node examples/probe.js"
 	},
 	"keywords": [
 		"movesense",
