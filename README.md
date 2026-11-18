@@ -1,5 +1,7 @@
 # movesense-driver
 
+**npm:** [movesense-driver](https://www.npmjs.com/package/movesense-driver) · **See it in use:** [selfsense.me](https://selfsense.me)
+
 A small, dependency-light Node.js driver for [Movesense](https://www.movesense.com/) BLE sensors. Talks the GATT SensorData Protocol (GSP) directly — no native bridges, no React Native shims — so you can stream accelerometer, gyro, magnetometer, IMU6/9, ECG, heart rate (with R-R intervals) and temperature into any Node app.
 
 - Pure JavaScript, ships with TypeScript types.
