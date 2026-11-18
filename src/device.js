@@ -9,6 +9,9 @@ const DEFAULT_OPTS = {
   initialReconnectDelayMs: 1000,
   maxReconnectDelayMs: 30000,
   commandTimeoutMs: 8000,
+  // Ceiling on best-effort cleanup writes (the UNSUBSCRIBE sent after a
+  // failed subscribe, on unsubscribe() and on disconnect()).
+  cleanupTimeoutMs: 2000,
   // Hard ceiling on connect (BLE link + service discovery). Movesense
   // sensors normally complete this in 1-3 s; if we hit the timeout the
   // sensor is almost always running a firmware variant that doesn't
@@ -80,7 +83,7 @@ class MovesenseDevice extends EventEmitter {
     this._userDisconnected = true;
     if (this._connected && this._writeChar) {
       for (const sub of this._activeSubs.values()) {
-        try { await this._writeFrame(protocol.buildUnsubscribe(sub.ref)); } catch (_) {}
+        await this._bestEffortWrite(protocol.buildUnsubscribe(sub.ref));
       }
     }
     this._activeSubs.clear();
@@ -155,7 +158,7 @@ class MovesenseDevice extends EventEmitter {
     if (!sub) return false;
     this._activeSubs.delete(path);
     if (this._connected && this._writeChar) {
-      try { await this._writeFrame(protocol.buildUnsubscribe(sub.ref)); } catch (_) {}
+      await this._bestEffortWrite(protocol.buildUnsubscribe(sub.ref));
     }
     return true;
   }
@@ -321,7 +324,7 @@ class MovesenseDevice extends EventEmitter {
     } catch (e) {
       this._activeSubs.delete(path);
       // Best-effort cleanup so the sensor doesn't leak a stale subscription.
-      try { await this._writeFrame(protocol.buildUnsubscribe(ref)); } catch (_) {}
+      await this._bestEffortWrite(protocol.buildUnsubscribe(ref));
       throw e;
     }
   }
@@ -367,6 +370,16 @@ class MovesenseDevice extends EventEmitter {
         reject(e);
       });
     });
+  }
+
+  // Cleanup write (UNSUBSCRIBE) that must never block or fail its caller.
+  // A write-with-response on a dead GATT channel never gets its ack, so an
+  // unbounded await here would swallow the error the caller is about to
+  // report (e.g. a subscribe timeout) and hang it forever instead.
+  async _bestEffortWrite(buf) {
+    try {
+      await withTimeout(this._writeFrame(buf), this._opts.cleanupTimeoutMs, 'cleanup write timed out');
+    } catch (_) { /* best effort */ }
   }
 
   _writeFrame(buf) {

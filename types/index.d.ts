@@ -68,6 +68,11 @@ export interface DeviceOptions {
    * Default 15000.
    */
   connectTimeoutMs?: number;
+  /**
+   * Ceiling in ms on best-effort cleanup writes (the UNSUBSCRIBE sent after
+   * a failed subscribe, on unsubscribe() and on disconnect()). Default 2000.
+   */
+  cleanupTimeoutMs?: number;
 }
 
 export interface ScannerOptions extends DeviceOptions {
