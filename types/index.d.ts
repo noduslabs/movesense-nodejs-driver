@@ -63,6 +63,11 @@ export interface DeviceOptions {
   maxReconnectDelayMs?: number;
   /** Per-command timeout in ms. Default 5000. */
   commandTimeoutMs?: number;
+  /**
+   * Hard ceiling in ms on connect() (BLE link + service discovery).
+   * Default 15000.
+   */
+  connectTimeoutMs?: number;
 }
 
 export interface ScannerOptions extends DeviceOptions {
