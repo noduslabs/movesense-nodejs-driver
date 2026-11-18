@@ -1,68 +1,90 @@
-// Battery check.
+// Battery check for one OR many Movesense sensors.
 //
-// Movesense exposes battery level in two independent ways:
-//
-//   1. Standard BLE Battery Service (UUID 0x180F).
-//      - Works on every firmware variant.
-//      - Single read returns the current percentage immediately.
-//      - Optional notify subscription for change updates.
-//      => Use `device.getBatteryLevel()` and `device.subscribeBatteryLevel()`.
-//
-//   2. Whiteboard `/System/Energy/Level` GET / SUBSCRIBE.
-//      - Stripped from some `gatt-sensordata-app` builds (returns 400).
-//      - Subscribe-only on most firmwares; notifies only on ~1% change with
-//        no initial value, so the first event can take many minutes.
-//      => Only use as a fallback. Shown at the bottom for reference.
+// Behaviour:
+//   - Scans for SCAN_SECONDS (default 10) and connects to every Movesense it
+//     finds in that window.
+//   - Prints the current battery percentage for each, then subscribes for
+//     live updates.
+//   - If MOVESENSE_SERIAL is set, only that one sensor is targeted.
 //
 // Run:
-//   node examples/battery.js
-//   MOVESENSE_SERIAL=210330000123 node examples/battery.js
+//   node examples/battery.js                                # all sensors in range
+//   SCAN_SECONDS=20 node examples/battery.js                # longer scan window
+//   MOVESENSE_SERIAL=210330000123 node examples/battery.js  # one specific sensor
 
 const { MovesenseScanner } = require('..');
+
+const SCAN_SECONDS  = Number(process.env.SCAN_SECONDS) || 10;
+const TARGET_SERIAL = process.env.MOVESENSE_SERIAL || null;
+
+async function handleDevice(device) {
+  const tag = device.serial || device.id.slice(0, 8);
+  device.on('error',        (e) => console.error(`[${tag}] error: ${e.message}`));
+  device.on('disconnect',   () => console.log(`[${tag}] disconnected`));
+  device.on('reconnecting', ({ attempt, delayMs }) =>
+    console.log(`[${tag}] reconnecting (attempt ${attempt}, in ${delayMs}ms)`));
+  device.on('reconnect',    () => console.log(`[${tag}] reconnected`));
+  device.on('battery',      ({ percent }) => console.log(`[${tag}] battery -> ${percent}%`));
+
+  try {
+    await device.connect();
+  } catch (e) {
+    console.error(`[${tag}] connect failed: ${e.message}`);
+    return;
+  }
+
+  try {
+    const percent = await device.getBatteryLevel();
+    console.log(`[${tag}] battery: ${percent}%`);
+  } catch (e) {
+    console.error(`[${tag}] battery read failed: ${e.message}`);
+  }
+
+  try {
+    await device.subscribeBatteryLevel();
+  } catch (e) {
+    console.error(`[${tag}] battery subscribe failed: ${e.message}`);
+  }
+}
 
 async function main() {
   const scanner = new MovesenseScanner();
   scanner.on('error', (e) => console.error('scanner error:', e.message));
 
-  console.log('Scanning for Movesense sensors...');
-  const device = await scanner.findOne({
-    serial: process.env.MOVESENSE_SERIAL,
-    timeoutMs: 30000,
+  const devices = new Map();          // peripheral.id -> MovesenseDevice
+  const inFlight = [];                // promises for per-device handling
+
+  scanner.on('discover', (device) => {
+    if (devices.has(device.id)) return;
+    if (TARGET_SERIAL && device.serial !== TARGET_SERIAL) return;
+    devices.set(device.id, device);
+    console.log(`discovered: ${device.localName} (id=${device.id})`);
+    inFlight.push(handleDevice(device));
   });
-  console.log(`Found ${device.localName} (id=${device.id})`);
 
-  device.on('error',        (e) => console.error('device error:', e.message));
-  device.on('disconnect',   () => console.log('disconnected'));
-  device.on('reconnecting', ({ attempt, delayMs }) =>
-    console.log(`reconnecting (attempt ${attempt}, in ${delayMs}ms)`));
-  device.on('reconnect',    () => console.log('reconnected'));
+  console.log(
+    TARGET_SERIAL
+      ? `Scanning for Movesense ${TARGET_SERIAL} (${SCAN_SECONDS}s)...`
+      : `Scanning for all Movesense sensors in range (${SCAN_SECONDS}s)...`
+  );
+  await scanner.start();
 
-  await device.connect();
-  console.log('connected');
+  await new Promise(r => setTimeout(r, SCAN_SECONDS * 1000));
+  await scanner.stop();
 
-  // ---- Preferred: standard BLE Battery Service ----
-  try {
-    const percent = await device.getBatteryLevel();
-    console.log(`>>> battery: ${percent}%`);
-  } catch (e) {
-    console.error('getBatteryLevel failed:', e.message);
-    console.error('This sensor does not expose the standard Battery Service.');
-    await device.disconnect();
-    process.exit(2);
+  if (devices.size === 0) {
+    console.error('No Movesense sensors found.');
+    process.exit(1);
   }
-
-  // Live updates (fires when the device pushes a new level).
-  device.on('battery', ({ percent }) => console.log(`>>> battery update: ${percent}%`));
-  try {
-    await device.subscribeBatteryLevel();
-    console.log('subscribed to battery notifications — Ctrl-C to exit');
-  } catch (e) {
-    console.error('subscribeBatteryLevel failed:', e.message);
-  }
+  console.log(`Scan window closed. ${devices.size} sensor(s). Awaiting connects...`);
+  await Promise.allSettled(inFlight);
+  console.log('All connected. Ctrl-C to exit.');
 
   const shutdown = async () => {
     console.log('\nstopping...');
-    try { await device.disconnect(); } catch (e) { console.error('shutdown error:', e.message); }
+    await Promise.allSettled(
+      Array.from(devices.values()).map(d => d.disconnect().catch(() => {}))
+    );
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
